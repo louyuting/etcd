@@ -109,9 +109,12 @@ type raftNodeConfig struct {
 	// to check if msg receiver is removed from cluster
 	isIDRemoved func(id uint64) bool
 	raft.Node
+	// 这个是纯内存的存储，用于raft状态机内部的raftLog
 	raftStorage *raft.MemoryStorage
-	storage     Storage
-	heartbeat   time.Duration // for logging
+	// 这个是 raftNode 内部写WAL日志的存储器
+	// server/etcdserver/storage.go:45
+	storage   Storage
+	heartbeat time.Duration // for logging
 	// transport specifies the transport to send and receive msgs to members.
 	// Sending messages MUST NOT block. It is okay to drop messages, since
 	// clients should timeout and reissue their messages.
@@ -165,6 +168,10 @@ func (r *raftNode) tick() {
 func (r *raftNode) start(rh *raftReadyHandler) {
 	internalTimeout := time.Second
 
+	// 启动异步协程，这个异步协程有两个任务：
+	// 1. 当前raftNode的Tick滴答函数： Tick函数会自增内部的路基时钟，节点有不同的角色，不同角色实际tick时候执行函数不一样；
+	//		比如Leader会超时发送心跳；Follower超时会发起选举
+	// 2. 监听当前Raft node的 ready 事件的channel, 阻塞等待异步ready事件的发生
 	go func() {
 		defer r.onStop()
 		islead := false
@@ -174,6 +181,8 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 			case <-r.ticker.C:
 				r.tick()
 			case rd := <-r.Ready():
+				// 异步通知这个channel的函数调用在：func (n *node) run() {......}
+				// raft状态机有Ready的事件异步通知返回
 				if rd.SoftState != nil {
 					newLeader := rd.SoftState.Lead != raft.None && rh.getLead() != rd.SoftState.Lead
 					if newLeader {
@@ -241,6 +250,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 				}
 
 				// gofail: var raftBeforeSave struct{}
+				// 这里会写WAL日志;
 				if err := r.storage.Save(rd.HardState, rd.Entries); err != nil {
 					r.lg.Fatal("failed to save Raft hard state and entries", zap.Error(err))
 				}
@@ -272,6 +282,9 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 					// gofail: var raftAfterWALRelease struct{}
 				}
 
+				// raftStorage 是纯内存存储的；
+				// raftStorage 也是raft状态机的存储，这里保存了所有已经commit的日志条目
+				// r.raftStorage 和 raft/log.go:29#raft/raft.raftLog.storage 是同一个对象
 				r.raftStorage.Append(rd.Entries)
 
 				if !islead {

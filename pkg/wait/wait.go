@@ -43,6 +43,7 @@ func New() Wait {
 	return &list{m: make(map[uint64]chan interface{})}
 }
 
+// Wait的实现
 func (w *list) Register(id uint64) <-chan interface{} {
 	w.l.Lock()
 	defer w.l.Unlock()

@@ -1037,6 +1037,9 @@ func (s *EtcdServer) run() {
 	for {
 		select {
 		case ap := <-s.r.apply():
+			// 往apply channel里面异步通知的调用位置在： (r *raftNode) start()
+			// 这里从raftNode里面异步接收可以apply到EtcdServer 持久化存储的实体(日志或则snapshot)
+			// 这里有一个FIFO的调度器来调度所有的apply任务执行，FIFOScheduler来保证apply任务按照顺序执行
 			f := func(context.Context) { s.applyAll(&ep, &ap) }
 			sched.Schedule(f)
 		case leases := <-expiredLeaseC:
@@ -1081,6 +1084,7 @@ func (s *EtcdServer) run() {
 	}
 }
 
+// applyAll 是 EtcdServer 持久化日志的最顶层接口
 func (s *EtcdServer) applyAll(ep *etcdProgress, apply *apply) {
 	s.applySnapshot(ep, apply)
 	s.applyEntries(ep, apply)
@@ -1994,6 +1998,7 @@ func (s *EtcdServer) sendMergedSnap(merged snap.Message) {
 // apply takes entries received from Raft (after it has been committed) and
 // applies them to the current state of the EtcdServer.
 // The given entries should not be empty.
+// apply将从raft状态机返回的已经commit日志持久化到 EtcdServer 的持久化存储中。
 func (s *EtcdServer) apply(
 	es []raftpb.Entry,
 	confState *raftpb.ConfState,
@@ -2032,6 +2037,7 @@ func (s *EtcdServer) apply(
 }
 
 // applyEntryNormal apples an EntryNormal type raftpb request to the EtcdServer
+// applyEntryNormal将已经commit的raft日志实体应用到Etcd Server端的KV存储
 func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 	shouldApplyV3 := false
 	index := s.consistIndex.ConsistentIndex()
@@ -2078,17 +2084,20 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 		return
 	}
 
+	// 获取当前raft请求的唯一ID，这个id是EtcdServer里面每次操作自增唯一的ID
 	id := raftReq.ID
 	if id == 0 {
 		id = raftReq.Header.ID
 	}
 
 	var ar *applyResult
+	// 检查当前id在EtcdServer入口时候是否已经注册过
 	needResult := s.w.IsRegistered(id)
 	if needResult || !noSideEffect(&raftReq) {
 		if !needResult && raftReq.Txn != nil {
 			removeNeedlessRangeReqs(raftReq.Txn)
 		}
+		// 将当前日志存储到 EtcdServer 的持久化存储(Bolt DB)
 		ar = s.applyV3.Apply(&raftReq)
 	}
 
@@ -2097,6 +2106,10 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 	}
 
 	if ar.err != ErrNoSpace || len(s.alarmStore.Get(pb.AlarmType_NOSPACE)) > 0 {
+		// Server端持久化存储成功
+		// 触发channel异步通知，告诉EtcdServer（比如PUT操作的select等待id对应的channel）,
+		// 当前更新操作(PUT/DELETE)已经执行成功并已经持久化了
+		// 触发channel, 通知Server端响应客户端
 		s.w.Trigger(id, ar)
 		return
 	}

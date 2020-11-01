@@ -324,6 +324,7 @@ func newRaft(c *Config) *raft {
 	if err := c.validate(); err != nil {
 		panic(err.Error())
 	}
+	// c.Storage是 raft/storage.go:76#MemoryStorage
 	raftlog := newLogWithSize(c.Storage, c.Logger, c.MaxCommittedSizePerReady)
 	hs, cs, err := c.Storage.InitialState()
 	if err != nil {
@@ -1040,6 +1041,7 @@ func stepLeader(r *raft, m pb.Message) error {
 			return ErrProposalDropped
 		}
 
+		// 这部分逻辑在PUT时候走不到
 		for i := range m.Entries {
 			e := &m.Entries[i]
 			var cc pb.ConfChangeI
@@ -1079,6 +1081,7 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 
+		//
 		if !r.appendEntry(m.Entries...) {
 			return ErrProposalDropped
 		}

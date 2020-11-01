@@ -20,12 +20,19 @@ import pb "go.etcd.io/etcd/raft/v3/raftpb"
 // Note that unstable.offset may be less than the highest log
 // position in storage; this means that the next write to storage
 // might need to truncate the log before persisting unstable.entries.
+// unstable 里面的snapshot 和 entries不会同时存在，同一时间只会存在一个。
+// 快照数据在前，entries在后，
 type unstable struct {
 	// the incoming unstable snapshot, if any.
+	// 快照数据仅当当前节点在接收从leader发送过来的快照数据时存在，在接收快照数据的时候，entries数组中是没有数据的；
+	// 除了这种情况之外，就只会存在entries数组的数据了。
+	// 因此，当接收完毕快照数据进入正常的接收日志流程时，快照数据将被置空。
 	snapshot *pb.Snapshot
 	// all entries that have not yet been written to storage.
 	entries []pb.Entry
-	offset  uint64
+	// unstable.offset成员保存的是entries数组中的第一条数据在raft日志中的索引
+	// 即第i条entries数组数据在raft日志中的索引为i + unstable.offset。
+	offset uint64
 
 	logger Logger
 }

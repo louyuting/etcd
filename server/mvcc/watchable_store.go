@@ -44,6 +44,8 @@ type watchable interface {
 	rev() int64
 }
 
+// KV 的底层实现
+// Read方法返回
 type watchableStore struct {
 	*store
 

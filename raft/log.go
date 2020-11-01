@@ -21,20 +21,27 @@ import (
 	pb "go.etcd.io/etcd/raft/v3/raftpb"
 )
 
+// raft状态机内部的日志实现
 type raftLog struct {
 	// storage contains all stable entries since the last snapshot.
+	// storage 是一个纯内存的数据，实现为：MemoryStorage
+	// 存放的是已经持久化过的数据，这里和 server/etcdserver/raft.go:113#raftNodeConfig.raftStorage是同一个对象
 	storage Storage
 
 	// unstable contains all unstable entries and snapshot.
 	// they will be saved into storage.
+	// unstable 指还没有被用户持久化的数据。
 	unstable unstable
 
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
+	// 保存的是当前已经提交的日志数据的索引
 	committed uint64
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
+	// 保存的是当前传入状态机的最高索引
+	// applied <= committed
 	applied uint64
 
 	logger Logger
@@ -70,6 +77,7 @@ func newLogWithSize(storage Storage, logger Logger, maxNextEntsSize uint64) *raf
 	if err != nil {
 		panic(err) // TODO(bdarnell)
 	}
+	// offset从持久化之后的最后一个index的下一个开始
 	log.unstable.offset = lastIndex + 1
 	log.unstable.logger = logger
 	// Initialize our committed and applied pointers to the time of the last compaction.

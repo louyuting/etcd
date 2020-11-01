@@ -46,6 +46,7 @@ const (
 	traceThreshold                   = 100 * time.Millisecond
 )
 
+// tips: 这个是Raft相关的KV接口
 type RaftKV interface {
 	Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error)
 	Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error)
@@ -91,6 +92,8 @@ type Authenticator interface {
 	RoleList(ctx context.Context, r *pb.AuthRoleListRequest) (*pb.AuthRoleListResponse, error)
 }
 
+// tips: get操作入口的关键函数
+// etcd的get/range操作，会直接操作KV存储，也就是从 key -> BTree检索 revision -> Bolt数据库检索的流程
 func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error) {
 	trace := traceutil.New("range",
 		s.getLogger(),
@@ -123,6 +126,7 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 		return s.authStore.IsRangePermitted(ai, r.Key, r.RangeEnd)
 	}
 
+	// tips: get函数执行地方，这里直接走 Server 端的存储了。
 	get := func() { resp, err = s.applyV3Base.Range(ctx, nil, r) }
 	if serr := s.doSerialize(ctx, chk, get); serr != nil {
 		err = serr
@@ -131,6 +135,16 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 	return resp, err
 }
 
+// tips: etcd put操作入口函数，由于 etcd 要保证强一致性，不可能直接写到KV存储器里面，后面有复杂的流程来保证集群的强一致性
+// 1. 首先要将这次Put封装成日志
+// 2. 进入Raft状态机(raft也有自己的raftLog，当然这个是存在内存)
+// 3. 这里假设Put操作是打到Leader节点的(如果不是也会转发给Leader)
+// 4. Leader首先会写到自己的 unstable log，然后向集群中的Peer发起投票，这里的发起投票的网络操作会通过Raft的ReadyC返回给应用层处理;
+//    server端会将日志写入WAL文件中
+// 5. 等待集群中大多数节点都同意了此次修改，然后将对应的Response传入Raft状态机
+// 6. Raft commit当前的写日志，然后发起请求让集群中的各个节点也都commit当前put操作
+// 7. 通知最上层日志已经commit，可以写入持久化的存储中(Bolt)
+// 8. 响应客户端
 func (s *EtcdServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {
 	ctx = context.WithValue(ctx, traceutil.StartTimeKey, time.Now())
 	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{Put: r})
@@ -675,6 +689,7 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 	if id == 0 {
 		id = r.Header.ID
 	}
+	// 给当前PUT操作所对应的唯一id,创建一个对应的等待的channel;
 	ch := s.w.Register(id)
 
 	cctx, cancel := context.WithTimeout(ctx, s.Cfg.ReqTimeout())
@@ -691,6 +706,9 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 	defer proposalsPending.Dec()
 
 	select {
+	// 阻塞等待：
+	// 等待当前PUT操作背后复杂的强一致性保证的操作完成；
+	// 完成之后会异步通知当前channel
 	case x := <-ch:
 		return x.(*applyResult), nil
 	case <-cctx.Done():
