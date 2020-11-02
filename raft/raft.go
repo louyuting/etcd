@@ -1081,7 +1081,7 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 
-		//
+		// raft状态机在收到 Propose 请求的时候就会写入到 unstable 的raft日志中
 		if !r.appendEntry(m.Entries...) {
 			return ErrProposalDropped
 		}

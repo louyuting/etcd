@@ -149,6 +149,8 @@ type lessor struct {
 	// demotec will be closed if the lessor is demoted.
 	demotec chan struct{}
 
+
+	// leaseMap存储了server端所有的 leaseId -> Lease 实体的映射关系
 	leaseMap             map[LeaseID]*Lease
 	leaseExpiredNotifier *LeaseExpiredNotifier
 	leaseCheckpointHeap  LeaseQueue
@@ -170,6 +172,10 @@ type lessor struct {
 	// requests for shorter TTLs are extended to the minimum TTL.
 	minLeaseTTL int64
 
+
+	// 异步的channel去处理过期的Lease
+	// Producer: 是lessor.runLoop(), 会每500ms检查一次过期Lease，然后放进这个channel
+	// Consumer: 是(s *EtcdServer) run()，会通过select来监听这个channel
 	expiredC chan []*Lease
 	// stopC is a channel whose closure indicates that the lessor should be stopped.
 	stopC chan struct{}
@@ -308,6 +314,7 @@ func (le *lessor) Grant(id LeaseID, ttl int64) (*Lease, error) {
 	return l, nil
 }
 
+// Revoke函数revoke leaseId 这个Lease
 func (le *lessor) Revoke(id LeaseID) error {
 	le.mu.Lock()
 
@@ -328,9 +335,11 @@ func (le *lessor) Revoke(id LeaseID) error {
 
 	// sort keys so deletes are in same order among all members,
 	// otherwise the backend hashes will be different
+	// 拿到当前Lease所关联的所有key
 	keys := l.Keys()
 	sort.StringSlice(keys).Sort()
 	for _, key := range keys {
+		// 最后实际执行 Lease 关联keys删除的逻辑，实际上也就是删除 Lease 所关联的 key
 		txn.DeleteRange([]byte(key), nil)
 	}
 
@@ -340,6 +349,7 @@ func (le *lessor) Revoke(id LeaseID) error {
 	// lease deletion needs to be in the same backend transaction with the
 	// kv deletion. Or we might end up with not executing the revoke or not
 	// deleting the keys if etcdserver fails in between.
+	// 这里 删除了 lease 相关信息
 	le.b.BatchTx().UnsafeDelete(leaseBucketName, int64ToBytes(int64(l.ID)))
 	// if len(keys) > 0, txn.End() will call ci.UnsafeSave function.
 	if le.ci != nil && len(keys) == 0 {
@@ -369,6 +379,7 @@ func (le *lessor) Checkpoint(id LeaseID, remainingTTL int64) error {
 
 // Renew renews an existing lease. If the given lease does not exist or
 // has expired, an error will be returned.
+// Renew 新建一个已经存在的lease
 func (le *lessor) Renew(id LeaseID) (int64, error) {
 	le.mu.RLock()
 	if !le.isPrimary() {
@@ -595,6 +606,7 @@ func (le *lessor) runLoop() {
 		le.revokeExpiredLeases()
 		le.checkpointScheduledLeases()
 
+		// lessor每500ms刷新一次过期的lease
 		select {
 		case <-time.After(500 * time.Millisecond):
 		case <-le.stopC:
@@ -605,14 +617,18 @@ func (le *lessor) runLoop() {
 
 // revokeExpiredLeases finds all leases past their expiry and sends them to expired channel for
 // to be revoked.
+// revokeExpiredLeases 会迭代lessor里面所有过期的租户，然后发送给 expiredC channel 去异步的处理
 func (le *lessor) revokeExpiredLeases() {
 	var ls []*Lease
 
 	// rate limit
+	// tips:流控
 	revokeLimit := leaseRevokeRate / 2
 
 	le.mu.RLock()
+	// lessor 操作只能是leader节点
 	if le.isPrimary() {
+		// 迭代当前 lessor 所有Lease，拿到所有过期的Lease
 		ls = le.findExpiredLeases(revokeLimit)
 	}
 	le.mu.RUnlock()
@@ -695,6 +711,7 @@ func (le *lessor) findExpiredLeases(limit int) []*Lease {
 	leases := make([]*Lease, 0, 16)
 
 	for {
+		// 首先会检查当前 lessor(出租人) 是否存在过期的Lease(租约)
 		l, ok, next := le.expireExists()
 		if !ok && !next {
 			break

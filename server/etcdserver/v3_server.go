@@ -292,6 +292,7 @@ func (s *EtcdServer) LeaseRevoke(ctx context.Context, r *pb.LeaseRevokeRequest) 
 	return resp.(*pb.LeaseRevokeResponse), nil
 }
 
+// tips: 客户端调用 KeepAlive时候，server端会走到这里
 func (s *EtcdServer) LeaseRenew(ctx context.Context, id lease.LeaseID) (int64, error) {
 	ttl, err := s.lessor.Renew(id)
 	if err == nil { // already requested to primary lessor(leader)

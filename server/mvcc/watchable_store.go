@@ -223,6 +223,7 @@ func (s *watchableStore) syncWatchersLoop() {
 
 		unsyncedWatchers := 0
 		if lastUnsyncedWatchers > 0 {
+			// tips: 读取当前所有watch 事件异步发送给channel
 			unsyncedWatchers = s.syncWatchers()
 		}
 		syncDuration := time.Since(st)
