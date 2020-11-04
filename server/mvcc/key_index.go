@@ -146,6 +146,7 @@ func (ki *keyIndex) get(lg *zap.Logger, atRev int64) (modified, created revision
 		return revision{}, revision{}, 0, ErrRevisionNotFound
 	}
 
+	// 在当前 generation 里面找到小于等于atRev的第一个revision
 	n := g.walk(func(rev revision) bool { return rev.main > atRev })
 	if n != -1 {
 		return g.revs[n], g.created, g.ver - int64(len(g.revs)-n-1), nil
