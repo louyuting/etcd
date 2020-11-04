@@ -253,7 +253,7 @@ func (c *Config) validate() error {
 
 type raft struct {
 	id uint64
-
+	// 当前raft节点所在的Term
 	Term uint64
 	Vote uint64
 
@@ -306,7 +306,9 @@ type raft struct {
 	checkQuorum bool
 	preVote     bool
 
+	// 默认是1
 	heartbeatTimeout int
+	// 默认是10
 	electionTimeout  int
 	// randomizedElectionTimeout is a random number between
 	// [electiontimeout, 2 * electiontimeout - 1]. It gets reset
@@ -314,7 +316,9 @@ type raft struct {
 	randomizedElectionTimeout int
 	disableProposalForwarding bool
 
+	// 当前raft节点随机timer执行函数；
 	tick func()
+	// 这个实际是raft状态机处理逻辑的核心函数
 	step stepFunc
 
 	logger Logger
@@ -668,6 +672,7 @@ func (r *raft) tickElection() {
 }
 
 // tickHeartbeat is run by leaders to send a MsgBeat after r.heartbeatTimeout.
+// 触发tick时候执行的函数(每个节点随机时间)，tickHeartbeat是leader节点执行的函数
 func (r *raft) tickHeartbeat() {
 	r.heartbeatElapsed++
 	r.electionElapsed++
@@ -689,6 +694,7 @@ func (r *raft) tickHeartbeat() {
 
 	if r.heartbeatElapsed >= r.heartbeatTimeout {
 		r.heartbeatElapsed = 0
+		// Leader发起心跳检测
 		r.Step(pb.Message{From: r.id, Type: pb.MsgBeat})
 	}
 }
@@ -767,6 +773,7 @@ func (r *raft) becomeLeader() {
 	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
 }
 
+// tips: hup函数执行当前节点发起选举的操作
 func (r *raft) hup(t CampaignType) {
 	if r.state == StateLeader {
 		r.logger.Debugf("%x ignoring MsgHup because already leader", r.id)
@@ -781,17 +788,21 @@ func (r *raft) hup(t CampaignType) {
 	if err != nil {
 		r.logger.Panicf("unexpected error getting unapplied entries (%v)", err)
 	}
+
+	// 当前节点有配置更改的Propose还没有处理完，所以不能发起Leader选举竞争
 	if n := numOfPendingConf(ents); n != 0 && r.raftLog.committed > r.raftLog.applied {
 		r.logger.Warningf("%x cannot campaign at term %d since there are still %d pending configuration changes to apply", r.id, r.Term, n)
 		return
 	}
 
 	r.logger.Infof("%x is starting a new election at term %d", r.id, r.Term)
+	// 当前节点直接选举
 	r.campaign(t)
 }
 
 // campaign transitions the raft instance to candidate state. This must only be
 // called after verifying that this is a legitimate transition.
+// campaign函数转变当前raft节点成candidate节点
 func (r *raft) campaign(t CampaignType) {
 	if !r.promotable() {
 		// This path should not be hit (callers are supposed to check), but
@@ -804,18 +815,24 @@ func (r *raft) campaign(t CampaignType) {
 		r.becomePreCandidate()
 		voteMsg = pb.MsgPreVote
 		// PreVote RPCs are sent for the next term before we've incremented r.Term.
+		// PreVote RPC并不会实际增加raft节点的term,而是先在RPC请求里面自增做探测。
 		term = r.Term + 1
 	} else {
+		// MsgVote RPC实际增加raft节点的term,
 		r.becomeCandidate()
 		voteMsg = pb.MsgVote
 		term = r.Term
 	}
+
+	// 这里会读取上层RaftNode里面网络层已经拿到的投票结果， 如果还没有拿到结果，下面的逻辑就走不到了。
 	if _, _, res := r.poll(r.id, voteRespMsgType(voteMsg), true); res == quorum.VoteWon {
 		// We won the election after voting for ourselves (which must mean that
 		// this is a single-node cluster). Advance to the next state.
+		// 赢得了选举
 		if t == campaignPreElection {
 			r.campaign(campaignElection)
 		} else {
+			// 当前节点变成leader
 			r.becomeLeader()
 		}
 		return
@@ -840,6 +857,7 @@ func (r *raft) campaign(t CampaignType) {
 		if t == campaignTransfer {
 			ctx = []byte(t)
 		}
+		// 这里会发送选举的请求给集群中的各个节点(实际执行是在raft状态机之外)
 		r.send(pb.Message{Term: term, To: id, Type: voteMsg, Index: r.raftLog.lastIndex(), LogTerm: r.raftLog.lastTerm(), Context: ctx})
 	}
 }
@@ -860,6 +878,9 @@ func (r *raft) Step(m pb.Message) error {
 	case m.Term == 0:
 		// local message
 	case m.Term > r.Term:
+		// message 的Term大于当前节点的term, 有几种action
+
+		// 当前message是candidate发来的请求投票的消息
 		if m.Type == pb.MsgVote || m.Type == pb.MsgPreVote {
 			force := bytes.Equal(m.Context, []byte(campaignTransfer))
 			inLease := r.checkQuorum && r.lead != None && r.electionElapsed < r.electionTimeout
@@ -883,7 +904,9 @@ func (r *raft) Step(m pb.Message) error {
 		default:
 			r.logger.Infof("%x [term: %d] received a %s message with higher term from %x [term: %d]",
 				r.id, r.Term, m.Type, m.From, m.Term)
+			// 收到一个term更高的消息
 			if m.Type == pb.MsgApp || m.Type == pb.MsgHeartbeat || m.Type == pb.MsgSnap {
+				// 收到的是Term更高的MsgApp、MsgHeartbeat、MsgSnap消息，当前节点切换成 Follower
 				r.becomeFollower(m.Term, m.From)
 			} else {
 				r.becomeFollower(m.Term, None)
@@ -913,6 +936,7 @@ func (r *raft) Step(m pb.Message) error {
 			// with "pb.MsgAppResp" of higher term would force leader to step down.
 			// However, this disruption is inevitable to free this stuck node with
 			// fresh election. This can be prevented with Pre-Vote phase.
+			// 收到一个来自Leader的更低Term的消息。
 			r.send(pb.Message{To: m.From, Type: pb.MsgAppResp})
 		} else if m.Type == pb.MsgPreVote {
 			// Before Pre-Vote enable, there may have candidate with higher term,
@@ -920,6 +944,7 @@ func (r *raft) Step(m pb.Message) error {
 			// we drop messages with a lower term.
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] rejected %s from %x [logterm: %d, index: %d] at term %d",
 				r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term)
+			//
 			r.send(pb.Message{To: m.From, Term: r.Term, Type: pb.MsgPreVoteResp, Reject: true})
 		} else {
 			// ignore other cases
@@ -931,13 +956,16 @@ func (r *raft) Step(m pb.Message) error {
 
 	switch m.Type {
 	case pb.MsgHup:
+		// raft状态机收到一个当前节点的要进行选举的消息；
 		if r.preVote {
+			// 如果开启了预选举，发起预选举
 			r.hup(campaignPreElection)
 		} else {
 			r.hup(campaignElection)
 		}
 
 	case pb.MsgVote, pb.MsgPreVote:
+		// raft状态机收到了其余节点的请求选举Leader的投票请求
 		// We can vote if this is a repeat of a vote we've already cast...
 		canVote := r.Vote == m.From ||
 			// ...we haven't voted and we don't think there's a leader yet in this term...
@@ -975,6 +1003,7 @@ func (r *raft) Step(m pb.Message) error {
 			// the message (it ignores all out of date messages).
 			// The term in the original message and current local term are the
 			// same in the case of regular votes, but different for pre-votes.
+			// 当前raft节点同意了其余节点的投票请求，把自己的投票给了请求节点
 			r.send(pb.Message{To: m.From, Term: m.Term, Type: voteRespMsgType(m.Type)})
 			if m.Type == pb.MsgVote {
 				// Only record real votes.
@@ -982,6 +1011,7 @@ func (r *raft) Step(m pb.Message) error {
 				r.Vote = m.From
 			}
 		} else {
+			// 当前raft节点拒绝了其余节点的投票请求
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] rejected %s from %x [logterm: %d, index: %d] at term %d",
 				r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term)
 			r.send(pb.Message{To: m.From, Term: r.Term, Type: voteRespMsgType(m.Type), Reject: true})
@@ -1184,6 +1214,7 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 	case pb.MsgHeartbeatResp:
+		// Leader收到了心跳检测的response
 		pr.RecentActive = true
 		pr.ProbeSent = false
 
@@ -1191,6 +1222,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		if pr.State == tracker.StateReplicate && pr.Inflights.Full() {
 			pr.Inflights.FreeFirstOne()
 		}
+		// 心跳检测成功，发送日志更新消息
 		if pr.Match < r.raftLog.lastIndex() {
 			r.sendAppend(m.From)
 		}
