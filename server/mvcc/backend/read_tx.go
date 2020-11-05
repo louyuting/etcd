@@ -87,12 +87,15 @@ func (baseReadTx *baseReadTx) UnsafeRange(bucketName, key, endKey []byte, limit 
 	if limit > 1 && !bytes.Equal(bucketName, safeRangeBucket) {
 		panic("do not use unsafeRange on non-keys bucket")
 	}
+
+	// tips: 优先找：local buffer cache
 	keys, vals := baseReadTx.buf.Range(bucketName, key, endKey, limit)
 	if int64(len(keys)) == limit {
 		return keys, vals
 	}
 
 	// find/cache bucket
+	// tips: 然后找持久化存储
 	bn := string(bucketName)
 	baseReadTx.txMu.RLock()
 	bucket, ok := baseReadTx.buckets[bn]
@@ -119,6 +122,7 @@ func (baseReadTx *baseReadTx) UnsafeRange(bucketName, key, endKey []byte, limit 
 	c := bucket.Cursor()
 	baseReadTx.txMu.Unlock()
 
+	// 从持久化存储里面range查找
 	k2, v2 := unsafeRange(c, key, endKey, limit-int64(len(keys)))
 	return append(k2, keys...), append(v2, vals...)
 }

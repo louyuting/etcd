@@ -119,10 +119,14 @@ func newBucketBuffer() *bucketBuffer {
 
 func (bb *bucketBuffer) Range(key, endKey []byte, limit int64) (keys [][]byte, vals [][]byte) {
 	f := func(i int) bool { return bytes.Compare(bb.buf[i].key, key) >= 0 }
+	// 从bb.buf[]里面找第i个元素，使得：bb.buf[i].key >= key
+	// 这里也就是找到起始位置
 	idx := sort.Search(bb.used, f)
 	if idx < 0 {
 		return nil, nil
 	}
+
+	// 表示没有endKey，也就是单key查找
 	if len(endKey) == 0 {
 		if bytes.Equal(key, bb.buf[idx].key) {
 			keys = append(keys, bb.buf[idx].key)
@@ -130,9 +134,13 @@ func (bb *bucketBuffer) Range(key, endKey []byte, limit int64) (keys [][]byte, v
 		}
 		return keys, vals
 	}
+
+	// 有endKey，表示范围查找
+	// 这里的if条件表示：endKey小于等于buf[idx].key，也就是在[key,endKey]范围内没有值
 	if bytes.Compare(endKey, bb.buf[idx].key) <= 0 {
 		return nil, nil
 	}
+	// 从buffer迭代所有正在使用的kv, 然后拿出满足条件的kvs
 	for i := idx; i < bb.used && int64(len(keys)) < limit; i++ {
 		if bytes.Compare(endKey, bb.buf[i].key) <= 0 {
 			break

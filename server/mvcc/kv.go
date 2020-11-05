@@ -69,6 +69,7 @@ type WriteView interface {
 	// It also generates one event for each key delete in the event history.
 	// if the `end` is nil, deleteRange deletes the key.
 	// if the `end` is not nil, deleteRange deletes the keys in range [key, range_end).
+	// DeleteRange 会导致store的全局revision自增
 	DeleteRange(key, end []byte) (n, rev int64)
 
 	// Put puts the given key, value into the store. Put also takes additional argument lease to
@@ -76,6 +77,7 @@ type WriteView interface {
 	// id.
 	// A put also increases the rev of the store, and generates one event in the event history.
 	// The returned rev is the current revision of the KV when the operation is executed.
+	// Put 会导致store的全局revision自增
 	Put(key, value []byte, lease lease.LeaseID) (rev int64)
 }
 

@@ -81,6 +81,7 @@ type store struct {
 	// revMuLock protects currentRev and compactMainRev.
 	// Locked at end of write txn and released after write txn unlock lock.
 	// Locked before locking read txn and released after locking.
+	// revMu读写锁保护 currentRev 和 compactMainRev 两个字段
 	revMu sync.RWMutex
 	// currentRev is the revision of the last completed transaction.
 	currentRev int64
