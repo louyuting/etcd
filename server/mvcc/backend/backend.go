@@ -95,10 +95,14 @@ type backend struct {
 	mu sync.RWMutex
 	db *bolt.DB
 
+	// 默认100ms
 	batchInterval time.Duration
-	batchLimit    int
-	batchTx       *batchTxBuffered
+	// 默认defaultBatchLimit    = 10000
+	batchLimit int
+	// backend 执行写事务的对象
+	batchTx *batchTxBuffered
 
+	// backend 执行只读事务的对象
 	readTx *readTx
 
 	stopc chan struct{}
@@ -206,10 +210,14 @@ func (b *backend) ConcurrentReadTx() ReadTx {
 	b.readTx.RLock()
 	defer b.readTx.RUnlock()
 	// prevent boltdb read Tx from been rolled back until store read Tx is done. Needs to be called when holding readTx.RLock().
+	// 用于 ConcurrentReadTx 的，增加一个并发的ReadTx
+	// 在concurrentReadTx.RUnlock()时候会释放这个waiter信号
 	b.readTx.txWg.Add(1)
 	// TODO: might want to copy the read buffer lazily - create copy when A) end of a write transaction B) end of a batch interval.
 	return &concurrentReadTx{
 		baseReadTx: baseReadTx{
+			// copy一份backend的readTx.buf, 这样就可以不用持有readTx.mu对buffer的保护，从而提升读的性能
+			// 这里就是空间换时间(锁的竞争)
 			buf:     b.readTx.buf.unsafeCopy(),
 			txMu:    b.readTx.txMu,
 			tx:      b.readTx.tx,
@@ -321,9 +329,11 @@ func (b *backend) run() {
 		select {
 		case <-t.C:
 		case <-b.stopc:
+			// 关闭了Backend才会触发
 			b.batchTx.CommitAndStop()
 			return
 		}
+		// 默认每100ms执行一次自动提交
 		if b.batchTx.safePending() != 0 {
 			b.batchTx.Commit()
 		}
@@ -516,6 +526,7 @@ func defragdb(odb, tmpdb *bolt.DB, limit int) error {
 	return tmptx.Commit()
 }
 
+// 这里会新建一个Bolt事务
 func (b *backend) begin(write bool) *bolt.Tx {
 	b.mu.RLock()
 	tx := b.unsafeBegin(write)

@@ -37,6 +37,7 @@ type BatchTx interface {
 	CommitAndStop()
 }
 
+// batchTx是写事务的封装
 type batchTx struct {
 	sync.Mutex
 	tx      *bolt.Tx
@@ -203,6 +204,7 @@ func (t *batchTx) safePending() int {
 func (t *batchTx) commit(stop bool) {
 	// commit the last tx
 	if t.tx != nil {
+		// 没有pending的事务，所以不需要提交
 		if t.pending == 0 && !stop {
 			return
 		}
@@ -242,6 +244,7 @@ func newBatchTxBuffered(backend *backend) *batchTxBuffered {
 			seq:      true,
 		},
 	}
+	// 这里会开启一个新的事务
 	tx.Commit()
 	return tx
 }
@@ -272,8 +275,10 @@ func (t *batchTxBuffered) CommitAndStop() {
 
 func (t *batchTxBuffered) commit(stop bool) {
 	// all read txs must be closed to acquire boltdb commit rwlock
+	// 这里是个读写锁，会等待所有读锁关闭，然后竞争到独占的写锁
 	t.backend.readTx.Lock()
 	t.unsafeCommit(stop)
+	// 释放读事务的写锁
 	t.backend.readTx.Unlock()
 }
 
