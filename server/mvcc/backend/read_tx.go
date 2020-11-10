@@ -127,7 +127,7 @@ func (baseReadTx *baseReadTx) UnsafeRange(bucketName, key, endKey []byte, limit 
 	c := bucket.Cursor()
 	baseReadTx.txMu.Unlock()
 
-	// 从持久化存储里面range查找
+	// 从持久化存储里面查找剩下的kv
 	k2, v2 := unsafeRange(c, key, endKey, limit-int64(len(keys)))
 	return append(k2, keys...), append(v2, vals...)
 }

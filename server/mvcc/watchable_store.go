@@ -357,6 +357,7 @@ func (s *watchableStore) syncWatchers() int {
 
 	// UnsafeRange returns keys and values. And in boltdb, keys are revisions.
 	// values are actual key-value pairs in backend.
+	// 这里获取的是 ReadTx，下面需要读锁锁住 ReadTx 的Buffer
 	tx := s.store.b.ReadTx()
 	tx.RLock()
 	revs, vs := tx.UnsafeRange(keyBucketName, minBytes, maxBytes, 0)

@@ -79,6 +79,9 @@ type Snapshot interface {
 	Close() error
 }
 
+// backend是etcd基于BoltDB实现的KV存储
+// BoltDB 天然支持一写多读并发事务；
+// backend 基于BoltDB封装了事务，提升了并发读的性能
 type backend struct {
 	// size and commits are used with atomic operations so they must be
 	// 64-bit aligned, otherwise 32-bit tests will crash
@@ -340,6 +343,7 @@ func (b *backend) run() {
 		}
 		// 默认每100ms执行一次自动提交
 		if b.batchTx.safePending() != 0 {
+			// 如果当前周期内存在pending的写事务就提交事务
 			b.batchTx.Commit()
 		}
 		t.Reset(b.batchInterval)
