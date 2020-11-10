@@ -1,0 +1,12 @@
+1. 通过上层mvcc的锁控制，确保进入到backend的是一写多读
+
+2. backend 里面的ReadTx 和 WriteTx 通过buffer支持几个特性：
+    2.1 batch的写事务提交
+    2.2 读事务的并发；
+    2.3 大数据量KV的读不block 写事务。
+    2.4 BoltDB的写事务的提交，需要rollback BoltDB 的读事务
+
+Bolt DB天然支持一写多读并发事务。这里的一写多读是通过读写锁做的，有几个问题：
+1. 写是通过COW，成本比较高，即使只改一个byte,也需要全部重写整个page;
+2. 所以将多个写操作批处理为一个单独的写操作可以极大地提高写吞吐量，
+3. 但是如果没有写缓冲区，batch write transaction的提高将会丢失。

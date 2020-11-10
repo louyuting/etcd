@@ -38,7 +38,10 @@ type BatchTx interface {
 }
 
 // batchTx是写事务的封装
+// 这里的访问都需要提前获取排他锁
 type batchTx struct {
+	// 这里的锁是保证 batchTx 的排他，也就是单线程
+	// 所以对下面属性的访问是都是在锁的保护下。
 	sync.Mutex
 	tx      *bolt.Tx
 	backend *backend
@@ -227,10 +230,12 @@ func (t *batchTx) commit(stop bool) {
 		}
 	}
 	if !stop {
+		// 重新创建写事务
 		t.tx = t.backend.begin(true)
 	}
 }
 
+// 批量提交写事务
 type batchTxBuffered struct {
 	batchTx
 	buf txWriteBuffer
@@ -249,11 +254,16 @@ func newBatchTxBuffered(backend *backend) *batchTxBuffered {
 	return tx
 }
 
+// 一个写事务结束时候，会调用这个函数
 func (t *batchTxBuffered) Unlock() {
+	// 表示当前 batch 已经有写事务结束但是还没有提交
 	if t.pending != 0 {
+		// 获取读事务的写锁，然后把写事务的KV更新同步到读事务的缓存Buffer中
 		t.backend.readTx.Lock() // blocks txReadBuffer for writing.
 		t.buf.writeback(&t.backend.readTx.buf)
 		t.backend.readTx.Unlock()
+		// 如果当前的写事务的更新操作的次数已经超过了betch的上限，就将当前pending的
+		// 所有写操作一次提交到BoltDB数据库
 		if t.pending >= t.backend.batchLimit {
 			t.commit(false)
 		}
@@ -261,6 +271,7 @@ func (t *batchTxBuffered) Unlock() {
 	t.batchTx.Unlock()
 }
 
+// batch 提交写事务
 func (t *batchTxBuffered) Commit() {
 	t.Lock()
 	t.commit(false)
@@ -276,6 +287,7 @@ func (t *batchTxBuffered) CommitAndStop() {
 func (t *batchTxBuffered) commit(stop bool) {
 	// all read txs must be closed to acquire boltdb commit rwlock
 	// 这里是个读写锁，会等待所有读锁关闭，然后竞争到独占的写锁
+	// 写事务的提交需要等所有读事务的锁释放
 	t.backend.readTx.Lock()
 	t.unsafeCommit(stop)
 	// 释放读事务的写锁
@@ -283,21 +295,26 @@ func (t *batchTxBuffered) commit(stop bool) {
 }
 
 func (t *batchTxBuffered) unsafeCommit(stop bool) {
+	// 处理读事务
 	if t.backend.readTx.tx != nil {
 		// wait all store read transactions using the current boltdb tx to finish,
-		// then close the boltdb tx
+		// then close the boltdb txs
+		// rollback 读事务
 		go func(tx *bolt.Tx, wg *sync.WaitGroup) {
 			wg.Wait()
 			if err := tx.Rollback(); err != nil {
 				t.backend.lg.Fatal("failed to rollback tx", zap.Error(err))
 			}
 		}(t.backend.readTx.tx, t.backend.readTx.txWg)
+		// 每次写事务的batch提交都需要清空 读事务的buffer
 		t.backend.readTx.reset()
 	}
 
+	// batch提交写事务
 	t.batchTx.commit(stop)
 
 	if !stop {
+		// 重新创建读事务
 		t.backend.readTx.tx = t.backend.begin(false)
 	}
 }

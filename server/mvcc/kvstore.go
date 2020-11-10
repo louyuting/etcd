@@ -69,6 +69,9 @@ type store struct {
 	cfg StoreConfig
 
 	// mu read locks for txns and write locks for non-txn store changes.
+	// 这个读写锁是用于控制正常的读写事务 与 Compact/Restore 等操作的隔离；
+	// 正常的读写事务只需要获取读锁，这个成本其实很低，只有一个atomic自加的损耗
+	// Compact/Restore 等操作的隔离需要写锁，这时候，正常的读写事务是不能执行的。
 	mu sync.RWMutex
 
 	ci cindex.ConsistentIndexer

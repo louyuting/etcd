@@ -38,13 +38,17 @@ type ReadTx interface {
 }
 
 // Base type for readTx and concurrentReadTx to eliminate duplicate functions between these
+// baseReadTx的访问是并发的，所以需要多个读写锁来保护。
 type baseReadTx struct {
 	// mu protects accesses to the txReadBuffer
+	// 写事务执行End时候，需要获取这个写锁，然后把写事务的更新写到 baseReadTx 的buffer里面；
+	// 创建 concurrentReadTx 时候，需要获取读锁，因为需要拷贝buffer
 	mu  sync.RWMutex
 	buf txReadBuffer
 
 	// TODO: group and encapsulate {txMu, tx, buckets, txWg}, as they share the same lifecycle.
 	// txMu protects accesses to buckets and tx on Range requests.
+	// 这个读写锁是保护下面的tx和buckets
 	txMu    *sync.RWMutex
 	tx      *bolt.Tx
 	buckets map[string]*bolt.Bucket
@@ -89,6 +93,7 @@ func (baseReadTx *baseReadTx) UnsafeRange(bucketName, key, endKey []byte, limit 
 	}
 
 	// tips: 优先找：local buffer cache
+	// 读缓存的时候不需要加锁，因为这里
 	keys, vals := baseReadTx.buf.Range(bucketName, key, endKey, limit)
 	if int64(len(keys)) == limit {
 		return keys, vals

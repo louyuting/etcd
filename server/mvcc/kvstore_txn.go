@@ -33,11 +33,15 @@ type storeTxnRead struct {
 }
 
 func (s *store) Read(trace *traceutil.Trace) TxnRead {
+	// 正常的读写操作只需要获取读锁
 	s.mu.RLock()
 	s.revMu.RLock()
 	// backend holds b.readTx.RLock() only when creating the concurrentReadTx. After
 	// ConcurrentReadTx is created, it will not block write transaction.
 	tx := s.b.ConcurrentReadTx()
+
+	// 这里需要获取transaction的读锁，
+	// 对于 ConcurrentReadTx 来说，由于ConcurrentReadTx的Buffer是基于拷贝的，所以这里是一个空操作
 	tx.RLock() // RLock is no-op. concurrentReadTx does not need to be locked after it is created.
 	firstRev, rev := s.compactMainRev, s.currentRev
 	s.revMu.RUnlock()
@@ -52,7 +56,11 @@ func (tr *storeTxnRead) Range(key, end []byte, ro RangeOptions) (r *RangeResult,
 }
 
 func (tr *storeTxnRead) End() {
+	// 这里需要释放 backend.ReadTx 的读锁
+	// 对于ConcurrentReadTx来说，是不需要获取读锁的，所以这里只是signals对应的 WaitGroup
 	tr.tx.RUnlock() // RUnlock signals the end of concurrentReadTx.
+
+	// 释放store的读锁
 	tr.s.mu.RUnlock()
 }
 
@@ -66,7 +74,10 @@ type storeTxnWrite struct {
 
 func (s *store) Write(trace *traceutil.Trace) TxnWrite {
 	s.mu.RLock()
+	// 这里实际上获取的是 backend的写事务对象
 	tx := s.b.BatchTx()
+	// 这里写事务是独占的，也就是同一时间，只能存在一个写事务，
+	// Tips: 这里需要加锁，然后确保写事务的执行是单线程的
 	tx.Lock()
 	tw := &storeTxnWrite{
 		storeTxnRead: storeTxnRead{s, tx, 0, 0, trace},
@@ -99,6 +110,7 @@ func (tw *storeTxnWrite) Put(key, value []byte, lease lease.LeaseID) int64 {
 	return tw.beginRev + 1
 }
 
+// 当写事务结束的时候，会调用这个函数
 func (tw *storeTxnWrite) End() {
 	// only update index if the txn modifies the mvcc state.
 	if len(tw.changes) != 0 {
@@ -107,10 +119,13 @@ func (tw *storeTxnWrite) End() {
 		tw.s.revMu.Lock()
 		tw.s.currentRev++
 	}
+	// 这里需要释放 backend.BatchTx 的独占锁
+	// 释放之后，其余的线程就可以再来获取写事务对象
 	tw.tx.Unlock()
 	if len(tw.changes) != 0 {
 		tw.s.revMu.Unlock()
 	}
+	// 释放store的读锁
 	tw.s.mu.RUnlock()
 }
 

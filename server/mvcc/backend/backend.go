@@ -92,6 +92,9 @@ type backend struct {
 	// openReadTxN is the number of currently open read transactions in the backend
 	openReadTxN int64
 
+	// 这里的锁也是隔离下面的db对象；
+	// 正常的创建bolt.DB事务只需要读锁；
+	// 但是做 defrag 时候需要写锁隔离
 	mu sync.RWMutex
 	db *bolt.DB
 
@@ -207,6 +210,8 @@ func (b *backend) ReadTx() ReadTx { return b.readTx }
 // A) creates and keeps a copy of backend.readTx.txReadBuffer,
 // B) references the boltdb read Tx (and its bucket cache) of current batch interval.
 func (b *backend) ConcurrentReadTx() ReadTx {
+	// 这里需要读 readTx 的buffer， 所以需要读锁
+	// 这里的锁占用时间是很低的
 	b.readTx.RLock()
 	defer b.readTx.RUnlock()
 	// prevent boltdb read Tx from been rolled back until store read Tx is done. Needs to be called when holding readTx.RLock().
