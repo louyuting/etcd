@@ -72,11 +72,13 @@ type storeTxnWrite struct {
 	changes  []mvccpb.KeyValue
 }
 
+// 使用store的用户先调用 Write() 函数创建一个写事务，
+// 写事务操作完了之后，必须要调用(tw *storeTxnWrite) End() 表示事务的结束
 func (s *store) Write(trace *traceutil.Trace) TxnWrite {
 	s.mu.RLock()
-	// 这里实际上获取的是 backend的写事务对象
+	// 获取 backend 当前的写事务对象
 	tx := s.b.BatchTx()
-	// 这里写事务是独占的，也就是同一时间，只能存在一个写事务，
+	// 获取写事务的独占锁，也就是同一时间，只能存在一个写事务，
 	// Tips: 这里需要加锁，然后确保写事务的执行是单线程的
 	tx.Lock()
 	tw := &storeTxnWrite{
