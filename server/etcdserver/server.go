@@ -2013,6 +2013,7 @@ func (s *EtcdServer) apply(
 
 		case raftpb.EntryConfChange:
 			// set the consistent index of current executing entry
+			// 更新一致性索引
 			if e.Index > s.consistIndex.ConsistentIndex() {
 				s.consistIndex.SetConsistentIndex(e.Index)
 			}
@@ -2040,6 +2041,7 @@ func (s *EtcdServer) apply(
 // applyEntryNormal将已经commit的raft日志实体应用到Etcd Server端的KV存储
 func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 	shouldApplyV3 := false
+	// tips：幂等校验，如果当前的Apply Entity的index小于或则等于consistIndex中保存的index, 则认为是重复数据，直接忽略。
 	index := s.consistIndex.ConsistentIndex()
 	if e.Index > index {
 		// set the consistent index of current executing entry
