@@ -163,6 +163,7 @@ func (s *EtcdServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) 
 }
 
 func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, error) {
+	// ReadOnly的话，就不用走Leader节点
 	if isTxnReadonly(r) {
 		trace := traceutil.New("transaction",
 			s.getLogger(),
