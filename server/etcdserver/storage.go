@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// raft层面的存储结构
 type Storage interface {
 	// Save function saves ents and state to the underlying stable storage.
 	// Save MUST block until st and ents are on stable storage.
