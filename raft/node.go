@@ -68,6 +68,7 @@ type Ready struct {
 
 	// Entries specifies entries to be saved to stable storage BEFORE
 	// Messages are sent.
+	// 在向其他集群发送消息之前需要先写入持久化存储的日志数据
 	Entries []pb.Entry
 
 	// Snapshot specifies the snapshot to be saved to stable storage.
@@ -76,12 +77,14 @@ type Ready struct {
 	// CommittedEntries specifies entries to be committed to a
 	// store/state-machine. These have previously been committed to stable
 	// store.
+	// 需要输入到状态机中的数据，这些数据之前已经被保存到持久化存储（WAL）中了
 	CommittedEntries []pb.Entry
 
 	// Messages specifies outbound messages to be sent AFTER Entries are
 	// committed to stable storage.
 	// If it contains a MsgSnap message, the application MUST report back to raft
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
+	//在entries被写入持久化存储中以后，需要发送出去的数据
 	Messages []pb.Message
 
 	// MustSync indicates whether the HardState and Entries must be synchronously

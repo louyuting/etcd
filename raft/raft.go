@@ -639,6 +639,7 @@ func (r *raft) reset(term uint64) {
 }
 
 func (r *raft) appendEntry(es ...pb.Entry) (accepted bool) {
+	// 拿到raftLog最后一条日志(可能还unstable，也可能是已经committed的存储)的索引
 	li := r.raftLog.lastIndex()
 	for i := range es {
 		es[i].Term = r.Term

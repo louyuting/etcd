@@ -88,6 +88,7 @@ func (u *unstable) stableTo(i, t uint64) {
 	// only update the unstable entries if term is matched with
 	// an unstable entry.
 	if gt == t && i >= u.offset {
+		// 删掉已经stable(写到wal)的entities
 		u.entries = u.entries[i+1-u.offset:]
 		u.offset = i + 1
 		u.shrinkEntriesArray()

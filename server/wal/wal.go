@@ -898,6 +898,7 @@ func (w *WAL) saveState(s *raftpb.HardState) error {
 	return w.encoder.encode(rec)
 }
 
+// 这里会记录在向其他集群发送消息之前需要先写入持久化存储的日志数据
 func (w *WAL) Save(st raftpb.HardState, ents []raftpb.Entry) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -911,6 +912,7 @@ func (w *WAL) Save(st raftpb.HardState, ents []raftpb.Entry) error {
 
 	// TODO(xiangli): no more reference operator
 	for i := range ents {
+		// tips: 这里是保存WAL的主要调用点
 		if err := w.saveEntry(&ents[i]); err != nil {
 			return err
 		}
