@@ -115,7 +115,9 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 		trace.LogIfLong(traceThreshold)
 	}(time.Now())
 
+	// tips:这里表示需要保证线性一致性
 	if !r.Serializable {
+		// 这里会等待线性一致性完成
 		err = s.linearizableReadNotify(ctx)
 		trace.Step("agreement among raft nodes before linearized reading")
 		if err != nil {
@@ -725,10 +727,20 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 // Watchable returns a watchable interface attached to the etcdserver.
 func (s *EtcdServer) Watchable() mvcc.WatchableKV { return s.KV() }
 
+// 这个异步协程负责处理线性一致性读: 主要是确保集群大多数已经commit的最新日志，在当前节点已经applied
+// 1. 这里的线性一致性读是并发的
+// 2. 创建request ID, 然后向raft状态机发起 ReadIndex 请求：
+//		2.1 如果是Leader节点直接拿到当前最新commit的index
+// 		2.2 如果是Follower节点，会走Raft状态机，把ReadIndex请求通过网络层转发给Leader，获取Leader的最新commit的index
+// 3. Leader需要发起 MsgCheckQuorum 请求，检查大多数节点已经commit的最新的index, 然后response ReadIndex
+// 4. 等待raft状态机返回ReadIndex的最新commited的index
+// 5. 获取当前Server已经applied的index, 如果appliedIndex大于等于raft状态机返回的committedIndex，那么达到了线性一致性条件，唤醒readNotify
+//    后面的读就可以走Backend的查询流程。如果appliedIndex小于raft状态机返回的committedIndex，就直接阻塞等待，知道达到条件。
 func (s *EtcdServer) linearizableReadLoop() {
 	var rs raft.ReadState
 
 	for {
+		// 每个线性一致性读需要创建一个唯一的 request id。
 		ctxToSend := make([]byte, 8)
 		id1 := s.reqIDGen.Next()
 		binary.BigEndian.PutUint64(ctxToSend, id1)
@@ -746,6 +758,9 @@ func (s *EtcdServer) linearizableReadLoop() {
 		trace := traceutil.New("linearizableReadLoop", s.getLogger())
 		nextnr := newNotifier()
 
+		// tips: 这里会获取读写锁的读锁，并更新readNotify,
+		// 等读锁释放之后就是后面的新的Notify
+		// 通过读写锁 + Notify的机制实现并发的读
 		s.readMu.Lock()
 		nr := s.readNotifier
 		s.readNotifier = nextnr
@@ -753,6 +768,7 @@ func (s *EtcdServer) linearizableReadLoop() {
 
 		lg := s.getLogger()
 		cctx, cancel := context.WithTimeout(context.Background(), s.Cfg.ReqTimeout())
+		// 请求read index，这里携带上了request id
 		if err := s.r.ReadIndex(cctx, ctxToSend); err != nil {
 			cancel()
 			if err == raft.ErrStopped {
@@ -772,8 +788,11 @@ func (s *EtcdServer) linearizableReadLoop() {
 		for !timeout && !done {
 			select {
 			case rs = <-s.r.readStateC:
+				// 从raft 状态机里面拿到了ready的readState
+				// 判断 rs里面的ctx和我们前面send的是不是一致的
 				done = bytes.Equal(rs.RequestCtx, ctxToSend)
 				if !done {
+					// 不一致，表示拿到了一个前面超时的ctx，直接忽略就好了
 					// a previous request might time out. now we should ignore the response of it and
 					// continue waiting for the response of the current requests.
 					id2 := uint64(0)
@@ -809,9 +828,12 @@ func (s *EtcdServer) linearizableReadLoop() {
 		index := rs.Index
 		trace.AddField(traceutil.Field{Key: "readStateIndex", Value: index})
 
+		// 拿到当前etcd节点的server端已经持久化到DB的最新index
 		ai := s.getAppliedIndex()
 		trace.AddField(traceutil.Field{Key: "appliedIndex", Value: strconv.FormatUint(ai, 10)})
 
+		// 如果当前applied index小于从leader那边读到的index
+		// 说明当前节点落后了，需要等待，知道当前index已经被apply
 		if ai < index {
 			select {
 			case <-s.applyWait.Wait(index):
@@ -820,6 +842,7 @@ func (s *EtcdServer) linearizableReadLoop() {
 			}
 		}
 		// unblock all l-reads requested at indices before rs.Index
+		// 唤醒所有等待notify的读协程。
 		nr.notify(nil)
 		trace.Step("applied index is now lower than readState.Index")
 
@@ -844,6 +867,7 @@ func (s *EtcdServer) linearizableReadNotify(ctx context.Context) error {
 
 	// wait for read state notification
 	select {
+	// notify的唤醒表示线性一致性的条件已经达到了，后续直接走查询就好了。
 	case <-nc.c:
 		return nc.err
 	case <-ctx.Done():
