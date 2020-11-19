@@ -218,7 +218,9 @@ func (a *applierV3backend) Put(ctx context.Context, txn mvcc.TxnWrite, p *pb.Put
 	}
 	val, leaseID := p.Value, lease.LeaseID(p.Lease)
 	if txn == nil {
+		// 如果存在lease id(非0)， 那么就需要去leader维护的lessor里面去查询
 		if leaseID != lease.NoLease {
+			// 没有找到对应的lessor(过期的lessor)， PUT操作就会失败。
 			if l := a.s.lessor.Lookup(leaseID); l == nil {
 				return nil, nil, lease.ErrLeaseNotFound
 			}
