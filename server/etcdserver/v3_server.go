@@ -173,6 +173,7 @@ func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse
 		)
 		ctx = context.WithValue(ctx, traceutil.TraceKey, trace)
 		if !isTxnSerializable(r) {
+			// 线性一致性读，所以需要保证线性一致性
 			err := s.linearizableReadNotify(ctx)
 			trace.Step("agreement among raft nodes before linearized reading")
 			if err != nil {

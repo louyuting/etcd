@@ -388,6 +388,7 @@ func (a *applierV3backend) Range(ctx context.Context, txn mvcc.TxnRead, r *pb.Ra
 	return resp, nil
 }
 
+// tips: 经过raft 状态机之后，最后处理Txn的调用
 func (a *applierV3backend) Txn(ctx context.Context, rt *pb.TxnRequest) (*pb.TxnResponse, *traceutil.Trace, error) {
 	trace := traceutil.Get(ctx)
 	if trace.IsEmpty() {
@@ -423,8 +424,11 @@ func (a *applierV3backend) Txn(ctx context.Context, rt *pb.TxnRequest) (*pb.TxnR
 	// readers do not see any intermediate results. Since writes are
 	// serialized on the raft loop, the revision in the read view will
 	// be the revision of the write txn.
+	// 走到这里说明 txn 是有写操作的，所以需要持有txn的读写锁的写锁，确保写的单一，以及读不会看到任何的中间结果
 	if isWrite {
+		// 首先释放前面的读事务
 		txn.End()
+		// 新建一个写事务
 		txn = a.s.KV().Write(trace)
 	}
 	a.applyTxn(ctx, txn, rt, txnPath, txnResp)
